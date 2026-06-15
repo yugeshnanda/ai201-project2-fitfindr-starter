@@ -18,7 +18,48 @@ Usage (once implemented):
     print(result["error"])   # None on success
 """
 
+import re
+
 from tools import search_listings, suggest_outfit, create_fit_card
+
+
+# ── query parser ──────────────────────────────────────────────────────────────
+
+# Matches "under $30", "below $40", "max $25", "less than $10", "< $5"
+_PRICE_RE = re.compile(
+    r'(?:under|below|max|less\s+than|beneath|<)\s*\$?\s*(\d+(?:\.\d+)?)'
+    r'|\$\s*(\d+(?:\.\d+)?)\s*or\s+less',
+    re.IGNORECASE,
+)
+
+# Matches "size M", "in size US 8", "size W30", or standalone clothing sizes
+_SIZE_RE = re.compile(
+    r'\b(?:in\s+)?size\s+([A-Za-z0-9/]+(?:\s+[A-Za-z0-9/.]+)?)'
+    r'|\b(XXS|XXL|XS|XL|[SML])\b',
+    re.IGNORECASE,
+)
+
+
+def _parse_query(query: str) -> dict:
+    """Extract description, size, and max_price from a free-text query."""
+    text = query
+
+    max_price = None
+    m = _PRICE_RE.search(text)
+    if m:
+        raw = m.group(1) or m.group(2)
+        max_price = float(raw)
+        text = text[: m.start()] + " " + text[m.end() :]
+
+    size = None
+    m = _SIZE_RE.search(text)
+    if m:
+        size = (m.group(1) or m.group(2)).strip()
+        text = text[: m.start()] + " " + text[m.end() :]
+
+    description = re.sub(r'\s+', ' ', text).strip().strip(',').strip()
+
+    return {"description": description, "size": size, "max_price": max_price}
 
 
 # ── session state ─────────────────────────────────────────────────────────────
@@ -92,9 +133,42 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     Before writing code, complete the Planning Loop and State Management sections
     of planning.md — your implementation should match what you described there.
     """
-    # TODO: implement the planning loop
+    # Step 1: Initialize session
     session = _new_session(query, wardrobe)
-    session["error"] = "Planning loop not yet implemented."
+
+    # Step 2: Parse query into description / size / max_price
+    session["parsed"] = _parse_query(query)
+    parsed = session["parsed"]
+
+    # Step 3: Search listings
+    session["search_results"] = search_listings(
+        parsed["description"],
+        size=parsed["size"],
+        max_price=parsed["max_price"],
+    )
+
+    # Branch A: no results — set error and return early
+    if not session["search_results"]:
+        session["error"] = (
+            "No listings found matching your search. "
+            "Try broader keywords or a higher price limit."
+        )
+        return session
+
+    # Step 4: Select top result
+    session["selected_item"] = session["search_results"][0]
+
+    # Step 5: Suggest outfit
+    session["outfit_suggestion"] = suggest_outfit(
+        session["selected_item"], session["wardrobe"]
+    )
+
+    # Step 6: Create fit card
+    session["fit_card"] = create_fit_card(
+        session["outfit_suggestion"], session["selected_item"]
+    )
+
+    # Step 7: Return completed session
     return session
 
 
